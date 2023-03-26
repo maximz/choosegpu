@@ -80,20 +80,19 @@ def get_available_gpus() -> List[Tuple[Union[int, Tuple[int, int]], str]]:
 
 has_user_configured_gpus = False
 
-
-def are_gpu_settings_configured():
+def are_gpu_settings_configured() -> bool:
     global has_user_configured_gpus
     # Check if user has called configure_gpu() and whether env vars were not set outside our code
     return has_user_configured_gpus and "CUDA_VISIBLE_DEVICES" in os.environ.keys()
 
 
-def get_gpu_config():
+def get_gpu_config() -> Optional[List[str]]:
     if "CUDA_VISIBLE_DEVICES" not in os.environ.keys():
         return None
     return os.environ["CUDA_VISIBLE_DEVICES"].split(",")
 
 
-def ensure_gpu_settings_configured():
+def ensure_gpu_settings_configured() -> None:
     """
     This function ensures some GPU settings are configured:
     If the user has not yet called configure_gpu(), this will call it with configure_gpu(enable=False).
@@ -103,12 +102,12 @@ def ensure_gpu_settings_configured():
 
 
 def configure_gpu(
-    enable=True,
-    desired_number_of_gpus=1,
-    memory_pool=False,
+    enable: bool = True,
+    desired_number_of_gpus: int = 1,
+    memory_pool: bool = False,
     gpu_device_ids: Optional[List[Union[int, Tuple[int, int]]]] = None,
-    overwrite_existing_configuration=True,
-):
+    overwrite_existing_configuration: bool = True,
+) -> Optional[List[str]]:
     """GPU bootstrap: configures GPU device IDs (overwrites CUDA_VISIBLE_DEVICES env var). Run before importing Tensorflow.
 
     Arguments:
