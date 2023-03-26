@@ -80,6 +80,7 @@ def get_available_gpus() -> List[Tuple[Union[int, Tuple[int, int]], str]]:
 
 has_user_configured_gpus = False
 
+
 def are_gpu_settings_configured() -> bool:
     global has_user_configured_gpus
     # Check if user has called configure_gpu() and whether env vars were not set outside our code
