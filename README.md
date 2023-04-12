@@ -1,4 +1,4 @@
-# Choose GPU
+# Choose GPU (WIP)
 
 [![](https://img.shields.io/pypi/v/choosegpu.svg)](https://pypi.python.org/pypi/choosegpu)
 [![CI](https://github.com/maximz/choosegpu/actions/workflows/ci.yaml/badge.svg?branch=master)](https://github.com/maximz/choosegpu/actions/workflows/ci.yaml)
