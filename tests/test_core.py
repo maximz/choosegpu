@@ -10,16 +10,25 @@ import choosegpu
 
 def _save_gpu_config():
     # get original values
-    return os.environ.get("CUDA_VISIBLE_DEVICES", None), copy.copy(
-        choosegpu.preferred_gpu_ids
+    return (
+        os.environ.get("CUDA_VISIBLE_DEVICES", None),
+        copy.copy(choosegpu.preferred_gpu_ids),
+        copy.copy(choosegpu._mac_silicon_gpu_config),
+        choosegpu.has_user_configured_gpus,
     )
 
 
 def _restore_gpu_config(original_values):
-    del os.environ["CUDA_VISIBLE_DEVICES"]
+    # Restore CUDA env var (may not exist on Mac Silicon)
+    if "CUDA_VISIBLE_DEVICES" in os.environ:
+        del os.environ["CUDA_VISIBLE_DEVICES"]
     if original_values[0] is not None:
         os.environ["CUDA_VISIBLE_DEVICES"] = original_values[0]
+
+    # Restore module state
     choosegpu.preferred_gpu_ids = original_values[1]
+    choosegpu._mac_silicon_gpu_config = original_values[2]
+    choosegpu.has_user_configured_gpus = original_values[3]
 
 
 @pytest.fixture
@@ -33,6 +42,9 @@ def mocked_pynvml(mocker):
 def test_gpu_ids(mocker, mocked_pynvml):
     # This test is an exception to the rule of "don't call config.configure_gpu() in tests; let conftest.py handle it"
     # But we restore the environment variable after the test.
+
+    # Mock platform detection to test NVIDIA GPU selection logic even on Mac
+    mocker.patch("choosegpu._is_mac_silicon", return_value=False)
 
     original_values = _save_gpu_config()
 
@@ -161,10 +173,50 @@ def test_gpu_ids_none_available(mocker, mocked_pynvml):
     # This test is an exception to the rule of "don't call config.configure_gpu() in tests; let conftest.py handle it"
     # But we restore the environment variable after the test.
 
+    # Mock platform detection to test NVIDIA GPU selection logic even on Mac
+    mocker.patch("choosegpu._is_mac_silicon", return_value=False)
+
     original_values = _save_gpu_config()
 
     mocker.patch("nvitop.Device.all", return_value=[])
     choosegpu.configure_gpu()
 
     # clean up
+    _restore_gpu_config(original_values)
+
+
+@pytest.mark.skipif(not choosegpu._is_mac_silicon(), reason="Only runs on Mac Silicon")
+def test_mac_silicon_mps_support():
+    """Test that MPS support is detected correctly on Mac Silicon with PyTorch installed."""
+    # This test only runs on actual Mac Silicon hardware
+    # It verifies that PyTorch with MPS support is properly detected
+
+    # Verify platform detection
+    assert choosegpu._is_mac_silicon()
+
+    # Verify MPS support detection (requires PyTorch to be installed)
+    # If this fails, PyTorch may not be installed or may not have MPS support
+    assert choosegpu._has_mps_support(), (
+        "PyTorch with MPS support should be available on Mac Silicon. "
+        "Make sure PyTorch is installed in test requirements."
+    )
+
+    # Test configuration
+    original_values = _save_gpu_config()
+
+    # Test enabling GPU
+    result = choosegpu.configure_gpu(enable=True)
+    assert result == ["mps"]
+    assert choosegpu.get_gpu_config() == ["mps"]
+    assert choosegpu.are_gpu_settings_configured()
+
+    # Test disabling GPU
+    result = choosegpu.configure_gpu(
+        enable=False, overwrite_existing_configuration=True
+    )
+    assert result == ["-1"]
+    assert choosegpu.get_gpu_config() == ["-1"]
+    assert choosegpu.are_gpu_settings_configured()
+
+    # Clean up
     _restore_gpu_config(original_values)
