@@ -27,7 +27,7 @@ setup(
     description="Choose GPU (supports NVIDIA CUDA and Apple Silicon MPS)",
     packages=find_packages(include=["choosegpu", "choosegpu.*"]),
     python_requires=">=3.8",
-    version="0.0.2",
+    version="0.0.3",
     classifiers=[
         "Development Status :: 2 - Pre-Alpha",
         "Intended Audience :: Developers",

@@ -194,12 +194,12 @@ def test_mac_silicon_mps_support():
     # Verify platform detection
     assert choosegpu._is_mac_silicon()
 
-    # Verify MPS support detection (requires PyTorch to be installed)
-    # If this fails, PyTorch may not be installed or may not have MPS support
-    assert choosegpu._has_mps_support(), (
-        "PyTorch with MPS support should be available on Mac Silicon. "
-        "Make sure PyTorch is installed in test requirements."
-    )
+    # Verify MPS support detection
+    import torch
+
+    assert (
+        hasattr(torch.backends, "mps") and torch.backends.mps.is_available()
+    ), "PyTorch with MPS support should be available on Mac Silicon. "
 
     # Test configuration
     original_values = _save_gpu_config()
@@ -209,6 +209,7 @@ def test_mac_silicon_mps_support():
     assert result == ["mps"]
     assert choosegpu.get_gpu_config() == ["mps"]
     assert choosegpu.are_gpu_settings_configured()
+    assert choosegpu.is_gpu_enabled() is True
 
     # Test disabling GPU
     result = choosegpu.configure_gpu(
@@ -217,6 +218,143 @@ def test_mac_silicon_mps_support():
     assert result == ["-1"]
     assert choosegpu.get_gpu_config() == ["-1"]
     assert choosegpu.are_gpu_settings_configured()
+    assert choosegpu.is_gpu_enabled() is False
 
     # Clean up
     _restore_gpu_config(original_values)
+
+
+def test_is_gpu_enabled_helper():
+    """Test the is_gpu_enabled() convenience method.
+
+    This tests the basic logic of the helper on the current platform.
+    """
+    original_values = _save_gpu_config()
+
+    # Test with explicit GPU config values
+    # Simulate disabled GPU
+    choosegpu.has_user_configured_gpus = True
+    if choosegpu._is_mac_silicon():
+        choosegpu._mac_silicon_gpu_config = ["-1"]
+    else:
+        os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
+
+    assert choosegpu.is_gpu_enabled() is False
+
+    # Simulate enabled GPU
+    if choosegpu._is_mac_silicon():
+        choosegpu._mac_silicon_gpu_config = ["mps"]
+    else:
+        os.environ["CUDA_VISIBLE_DEVICES"] = "GPU-123"
+
+    assert choosegpu.is_gpu_enabled() is True
+
+    # Simulate not configured
+    choosegpu.has_user_configured_gpus = False
+    if not choosegpu._is_mac_silicon() and "CUDA_VISIBLE_DEVICES" in os.environ:
+        del os.environ["CUDA_VISIBLE_DEVICES"]
+    choosegpu._mac_silicon_gpu_config = None
+
+    assert choosegpu.is_gpu_enabled() is None
+
+    # Clean up
+    _restore_gpu_config(original_values)
+
+
+def test_check_if_gpu_libraries_see_gpu(mocker):
+    """Test the check_if_gpu_libraries_see_gpu() method that checks PyTorch's view of GPU hardware.
+
+    This tests the behavioral differences between Mac Silicon and NVIDIA platforms.
+    """
+    original_values = _save_gpu_config()
+
+    # Test on Mac Silicon
+    if choosegpu._is_mac_silicon():
+        # On Mac, MPS is always available if hardware supports it, regardless of configure_gpu
+        # Configure GPU to be disabled
+        choosegpu.configure_gpu(enable=False, overwrite_existing_configuration=True)
+        assert choosegpu.is_gpu_enabled() is False
+
+        # But hardware is still available from PyTorch's perspective
+        # (assuming PyTorch with MPS is installed, which it should be per requirements_dev.txt)
+        assert choosegpu.check_if_gpu_libraries_see_gpu() is True, (
+            "On Mac Silicon, MPS hardware should be available even when configure_gpu(enable=False). "
+            "This is a fundamental difference from NVIDIA CUDA."
+        )
+
+        # Even with GPU enabled, hardware is available
+        choosegpu.configure_gpu(enable=True, overwrite_existing_configuration=True)
+        assert choosegpu.is_gpu_enabled() is True
+        assert choosegpu.check_if_gpu_libraries_see_gpu() is True
+
+    # Test on NVIDIA (or mock it on Mac)
+    else:
+        # Test with GPU enabled
+        mocker.patch("choosegpu._is_mac_silicon", return_value=False)
+
+        # When GPU is enabled, CUDA should be available (if hardware exists)
+        choosegpu.configure_gpu(enable=True, overwrite_existing_configuration=True)
+        # We can't reliably test this is True because we might be in CI without GPUs
+        # Just check that it doesn't crash
+        result = choosegpu.check_if_gpu_libraries_see_gpu()
+        assert isinstance(result, bool)
+
+        # When GPU is disabled, CUDA should NOT be available
+        choosegpu.configure_gpu(enable=False, overwrite_existing_configuration=True)
+        assert choosegpu.is_gpu_enabled() is False
+        # With CUDA_VISIBLE_DEVICES="-1", torch.cuda.is_available() should return False
+        assert (
+            choosegpu.check_if_gpu_libraries_see_gpu() is False
+        ), "On NVIDIA, CUDA should not be available when configure_gpu(enable=False)"
+
+    # Clean up
+    _restore_gpu_config(original_values)
+
+
+def test_check_if_gpu_libraries_see_gpu_no_pytorch(mocker):
+    """Test check_if_gpu_libraries_see_gpu() when PyTorch is not installed."""
+    original_values = _save_gpu_config()
+
+    # Mock PyTorch import to fail
+    import builtins
+
+    real_import = builtins.__import__
+
+    def mock_import(name, *args, **kwargs):
+        if name == "torch":
+            raise ImportError("PyTorch not installed")
+        return real_import(name, *args, **kwargs)
+
+    mocker.patch("builtins.__import__", side_effect=mock_import)
+
+    # Should return False when PyTorch is not installed
+    assert choosegpu.check_if_gpu_libraries_see_gpu() is False
+
+    # Clean up
+    _restore_gpu_config(original_values)
+
+
+def test_get_available_gpus_no_pytorch_on_mac(mocker):
+    """Test that get_available_gpus() works on Mac Silicon even without PyTorch installed."""
+    if not choosegpu._is_mac_silicon():
+        pytest.skip("This test only runs on Mac Silicon")
+
+    # Mock PyTorch import to fail
+    import builtins
+
+    real_import = builtins.__import__
+
+    def mock_import(name, *args, **kwargs):
+        if name == "torch":
+            raise ImportError("PyTorch not installed")
+        return real_import(name, *args, **kwargs)
+
+    mocker.patch("builtins.__import__", side_effect=mock_import)
+
+    # get_available_gpus() should still work and return MPS device
+    # even without PyTorch installed (all Mac Silicon have GPUs)
+    available_gpus = choosegpu.get_available_gpus()
+    assert available_gpus == [(0, "mps")], (
+        "On Mac Silicon, get_available_gpus() should return MPS device "
+        "even when PyTorch is not installed, since all Mac Silicon have GPUs"
+    )
