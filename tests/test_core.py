@@ -289,17 +289,21 @@ def test_check_if_gpu_libraries_see_gpu(mocker):
 
     # Test on NVIDIA (or mock it on Mac)
     else:
-        # Test with GPU enabled
+        # Test with GPU enabled - only if GPUs are actually available
         mocker.patch("choosegpu._is_mac_silicon", return_value=False)
 
-        # When GPU is enabled, CUDA should be available (if hardware exists)
-        choosegpu.configure_gpu(enable=True, overwrite_existing_configuration=True)
-        # We can't reliably test this is True because we might be in CI without GPUs
-        # Just check that it doesn't crash
-        result = choosegpu.check_if_gpu_libraries_see_gpu()
-        assert isinstance(result, bool)
+        # Check if any GPUs are available first
+        available_gpus = choosegpu.get_available_gpus()
+        if len(available_gpus) > 0:
+            # When GPU is enabled, CUDA should be available (if hardware exists)
+            choosegpu.configure_gpu(enable=True, overwrite_existing_configuration=True)
+            assert choosegpu.is_gpu_enabled() is True
+            assert (
+                choosegpu.check_if_gpu_libraries_see_gpu() is True
+            ), "On NVIDIA with GPUs present, CUDA should be available when configure_gpu(enable=True)"
 
         # When GPU is disabled, CUDA should NOT be available
+        # This test works even without real GPUs
         choosegpu.configure_gpu(enable=False, overwrite_existing_configuration=True)
         assert choosegpu.is_gpu_enabled() is False
         # With CUDA_VISIBLE_DEVICES="-1", torch.cuda.is_available() should return False
