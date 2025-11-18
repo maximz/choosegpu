@@ -2,10 +2,12 @@
 
 __author__ = """Maxim Zaslavsky"""
 __email__ = "maxim@maximz.com"
-__version__ = "0.0.1"
+__version__ = "0.0.2"
 
 import logging
 import os
+import platform
+import sys
 from typing import List, Tuple, Union, Optional
 import math
 
@@ -15,19 +17,56 @@ logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
 
 
+def _is_mac_silicon() -> bool:
+    """Detect if running on Mac Silicon (Apple Silicon / ARM)."""
+    return sys.platform == "darwin" and platform.machine() == "arm64"
+
+
+def _has_mps_support() -> bool:
+    """Check if PyTorch MPS backend is available."""
+    try:
+        import torch
+
+        return hasattr(torch.backends, "mps") and torch.backends.mps.is_available()
+    except ImportError:
+        return False
+
+
 # Override on module initialization for global configuration of which GPUs to favor.
 # Ignored if gpu_device_ids parameter is set in configure_gpu(...) call.
 preferred_gpu_ids: List[Union[int, Tuple[int, int]]] = []
+
+# Track Mac Silicon GPU configuration state internally (since we don't use environment variables)
+_mac_silicon_gpu_config: Optional[List[str]] = None
 
 
 def get_available_gpus() -> List[Tuple[Union[int, Tuple[int, int]], str]]:
     """
     Detect which GPUs are free (allowing for ambient RAM usage and GPU utilization spikes -- unclear why those happen).
     Returns available GPUs as tuples of (GPU ID, GPU UUID). The UUID is a string. The ID is an int in the case of a single physical device, or a tuple of ints in MIG mode.
+
+    On Mac Silicon, returns a single MPS device if available.
+    On NVIDIA systems, uses NVML to detect available CUDA devices.
     """
-    # Get leaf devices (i.e. finds MIG devices in MIG mode, ignoring the parent device); take snapshot of current utilization
-    from nvitop import Device, Snapshot
-    from nvitop.api import libnvml
+    # Mac Silicon: Use MPS (Metal Performance Shaders) backend
+    if _is_mac_silicon():
+        if _has_mps_support():
+            # Return a single MPS device
+            # Use ID 0 and a special UUID to indicate MPS
+            return [(0, "mps")]
+        else:
+            logger.warning("Mac Silicon detected but PyTorch MPS backend not available")
+            return []
+
+    # NVIDIA GPUs: Use NVML
+    # Note: nvitop is a regular dependency and should be installed, but we wrap in try/except
+    # for graceful handling if something goes wrong with the installation
+    try:
+        from nvitop import Device, Snapshot
+        from nvitop.api import libnvml
+    except ImportError as e:
+        logger.error(f"nvitop not available - cannot detect NVIDIA GPUs: {e}")
+        return []
 
     def _is_available(gpu_device: Snapshot):
         return (
@@ -57,18 +96,22 @@ def get_available_gpus() -> List[Tuple[Union[int, Tuple[int, int]], str]]:
     # except NVML_ERROR_UNINITIALIZED:
     #     libnvml.nvmlShutdown()
     #     libnvml.nvmlInit()
-    with libnvml:
-        gpu_devices = [
-            leaf_device.as_snapshot()
-            for device in Device.all()
-            for leaf_device in device.to_leaf_devices()
-        ]
+    try:
+        with libnvml:
+            gpu_devices = [
+                leaf_device.as_snapshot()
+                for device in Device.all()
+                for leaf_device in device.to_leaf_devices()
+            ]
 
-        return [
-            (gpu_device.index, gpu_device.uuid)
-            for gpu_device in gpu_devices
-            if _is_available(gpu_device)
-        ]
+            return [
+                (gpu_device.index, gpu_device.uuid)
+                for gpu_device in gpu_devices
+                if _is_available(gpu_device)
+            ]
+    except Exception as e:
+        logger.error(f"Failed to detect NVIDIA GPUs: {e}")
+        return []
 
 
 # Track whether configure_gpu has been called (regardless of whether enabled or disabled)
@@ -83,14 +126,35 @@ has_user_configured_gpus = False
 
 def are_gpu_settings_configured() -> bool:
     global has_user_configured_gpus
-    # Check if user has called configure_gpu() and whether env vars were not set outside our code
-    return has_user_configured_gpus and "CUDA_VISIBLE_DEVICES" in os.environ.keys()
+    # Check if user has called configure_gpu()
+    # On Mac Silicon, we just check the global flag since there's no environment variable we set
+    # On NVIDIA, we check both the flag and the CUDA env var
+    if _is_mac_silicon():
+        return has_user_configured_gpus
+    else:
+        return has_user_configured_gpus and "CUDA_VISIBLE_DEVICES" in os.environ.keys()
 
 
 def get_gpu_config() -> Optional[List[str]]:
-    if "CUDA_VISIBLE_DEVICES" not in os.environ.keys():
-        return None
-    return os.environ["CUDA_VISIBLE_DEVICES"].split(",")
+    """Get current GPU configuration.
+
+    Returns list of GPU device IDs/UUIDs that are currently configured.
+    On Mac Silicon, returns ["mps"] if GPU is enabled, ["-1"] if disabled, or None if not configured.
+    On NVIDIA, returns CUDA device IDs/UUIDs from CUDA_VISIBLE_DEVICES.
+    """
+    global has_user_configured_gpus
+
+    if _is_mac_silicon():
+        # On Mac Silicon, we don't set environment variables
+        # We need to track the state internally via a module-level variable
+        if not has_user_configured_gpus:
+            return None
+        # Check the internal state - we'll store it in a module variable
+        return _mac_silicon_gpu_config
+    else:
+        if "CUDA_VISIBLE_DEVICES" not in os.environ.keys():
+            return None
+        return os.environ["CUDA_VISIBLE_DEVICES"].split(",")
 
 
 def ensure_gpu_settings_configured() -> None:
@@ -109,11 +173,26 @@ def configure_gpu(
     gpu_device_ids: Optional[List[Union[int, Tuple[int, int]]]] = None,
     overwrite_existing_configuration: bool = True,
 ) -> Optional[List[str]]:
-    """GPU bootstrap: configures GPU device IDs (overwrites CUDA_VISIBLE_DEVICES env var). Run before importing Tensorflow.
+    """GPU bootstrap: configures GPU device IDs.
+
+    On NVIDIA systems: overwrites CUDA_VISIBLE_DEVICES env var. Run before importing Tensorflow/PyTorch.
+    On Mac Silicon: configures PyTorch to use MPS (Metal Performance Shaders) backend.
+
+    IMPORTANT BEHAVIORAL DIFFERENCE:
+    - On NVIDIA: configure_gpu(enable=False) sets CUDA_VISIBLE_DEVICES="-1", which makes
+                 torch.cuda.is_available() return False. GPU is truly disabled.
+    - On Mac Silicon: configure_gpu(enable=False) will not prevent the hardware from being detectable.
+                      Your code must check get_gpu_config() to determine whether to actually use the GPU.
 
     Arguments:
     - enable: enable or disable GPU
-    - gpu_device_ids: preferred GPU ID(s), will be chosen if available. The ID is an int in the case of a single physical device, or a tuple of ints in MIG mode.
+    - desired_number_of_gpus: number of GPUs to use (ignored on Mac Silicon, which has a single integrated GPU)
+    - memory_pool: enable memory pooling (only works on NVIDIA GPUs with RMM)
+    - gpu_device_ids: preferred GPU ID(s), will be chosen if available. The ID is an int in the case of a single physical device, or a tuple of ints in MIG mode. (NVIDIA only)
+    - overwrite_existing_configuration: whether to overwrite existing GPU configuration
+
+    Returns:
+    - List of GPU device identifiers (e.g., ["mps"] on Mac Silicon, ["GPU-UUID"] on NVIDIA, ["-1"] when disabled)
     """
 
     global has_user_configured_gpus
@@ -129,6 +208,43 @@ def configure_gpu(
     if gpu_device_ids is None:
         gpu_device_ids = preferred_gpu_ids
 
+    # Mac Silicon: Use MPS backend
+    if _is_mac_silicon():
+        global _mac_silicon_gpu_config
+
+        if enable:
+            # Note: Unlike NVIDIA CUDA, there's no environment variable to "enable" MPS.
+            # PyTorch will automatically use MPS when available if the user moves tensors to the MPS device.
+            # We just track the configuration state internally.
+            # Note: We don't check if PyTorch is installed or has MPS support here - choosegpu just
+            # tracks configuration state. If PyTorch isn't installed or doesn't support MPS,
+            # that's the user's responsibility to handle.
+            logger.info(
+                "Configured Mac Silicon to use MPS (Metal Performance Shaders) backend"
+            )
+
+            if memory_pool:
+                logger.warning(
+                    "Memory pooling with RMM is not supported on Mac Silicon (NVIDIA-only). Ignoring memory_pool=True."
+                )
+
+            has_user_configured_gpus = True
+            _mac_silicon_gpu_config = ["mps"]
+            return ["mps"]
+        else:
+            # Disable GPU
+            # IMPORTANT: On Mac Silicon, we cannot actually disable GPU at the PyTorch level like we can with CUDA.
+            # torch.backends.mps.is_available() will still return True because the hardware is always available.
+            # We just track the configuration state internally. Your code should check get_gpu_config()
+            # to determine whether to use the GPU.
+            # This is fundamentally different from NVIDIA CUDA, where setting CUDA_VISIBLE_DEVICES="-1"
+            # makes torch.cuda.is_available() return False.
+            logger.info("Disabled GPU on Mac Silicon")
+            has_user_configured_gpus = True
+            _mac_silicon_gpu_config = ["-1"]
+            return ["-1"]
+
+    # NVIDIA GPUs: Original CUDA logic
     if enable:
         # Detect which GPUs are free.
         # Sort in reverse order because we prefer to use higher-numbered GPUs (other people's code may try to grab GPU 0 by default)
