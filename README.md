@@ -64,7 +64,7 @@ choosegpu.configure_gpu(enable=False)
 
 import torch
 
-# On Mac Silicon: check choosegpu.get_gpu_config() to see if GPU should not be used
+# On Mac Silicon: check choosegpu.is_gpu_enabled() to see if GPU should be used
 ```
 
 ### Check GPU Configuration
@@ -74,15 +74,40 @@ import choosegpu
 
 choosegpu.configure_gpu(enable=True)
 
-# Get the current GPU configuration
+# Check if GPU is enabled (recommended)
+gpu_enabled = choosegpu.is_gpu_enabled()
+# Returns: True if GPU is enabled
+# Returns: False if GPU is disabled (CPU mode)
+# Returns: None if not yet configured
+
+if gpu_enabled:
+    print("GPU is enabled")
+elif gpu_enabled is False:
+    print("GPU is disabled (CPU mode)")
+else:
+    print("GPU not yet configured")
+
+# Advanced: Get the raw GPU configuration
 gpu_config = choosegpu.get_gpu_config()
 # Returns: ["mps"] on Mac Silicon, or ["GPU-UUID"] on NVIDIA
 # Returns: ["-1"] when disabled
 # Returns: None if not configured
+```
 
-# Check if GPU settings have been configured
-if choosegpu.are_gpu_settings_configured():
-    print(f"GPU configured: {gpu_config}")
+### Check Hardware Availability (PyTorch)
+
+```python
+import choosegpu
+
+choosegpu.configure_gpu(enable=False)  # Disable GPU
+
+# Check configuration state
+print(f"GPU enabled: {choosegpu.is_gpu_enabled()}")  # False
+
+# Check hardware availability (requires PyTorch)
+print(f"GPU hardware available: {choosegpu.check_if_gpu_libraries_see_gpu()}")
+# On Mac Silicon: True (hardware cannot be hidden)
+# On NVIDIA: False (CUDA_VISIBLE_DEVICES="-1" hides hardware)
 ```
 
 ### Advanced: Prefer Specific GPUs (NVIDIA only)
@@ -129,9 +154,28 @@ Configure GPU usage. Must be called before importing PyTorch/TensorFlow.
 
 **Returns:** List of GPU device identifiers (e.g., `["mps"]` or `["GPU-UUID-123"]`)
 
+### `is_gpu_enabled()`
+
+Check if GPU is enabled. This is the recommended way to check GPU configuration status.
+
+**Returns:**
+- `True`: GPU is enabled (configured to use GPU)
+- `False`: GPU is disabled (configured to use CPU only)
+- `None`: GPU configuration has not been set yet
+
+### `check_if_gpu_libraries_see_gpu()`
+
+Check if PyTorch can see GPU hardware (CUDA or MPS). This requires PyTorch to be installed.
+
+**Important platform differences:**
+- **Mac Silicon**: Returns `True` if PyTorch MPS is available, REGARDLESS of `configure_gpu()` settings. Mac hardware cannot be "hidden" like CUDA can.
+- **NVIDIA**: Returns `True` if CUDA is available AND not disabled by `configure_gpu()`. When `configure_gpu(enable=False)` is called, `CUDA_VISIBLE_DEVICES="-1"` makes `torch.cuda.is_available()` return `False`.
+
+**Returns:** `True` if GPU hardware is available to PyTorch, `False` otherwise (including when PyTorch is not installed)
+
 ### `get_gpu_config()`
 
-Get current GPU configuration.
+Get current GPU configuration. For most use cases, prefer `is_gpu_enabled()` instead.
 
 **Returns:**
 - `["mps"]` if MPS is enabled on Mac Silicon
