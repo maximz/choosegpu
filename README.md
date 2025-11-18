@@ -20,7 +20,7 @@ Automatically configure GPU usage for PyTorch and TensorFlow. Supports both NVID
 
 - **NVIDIA CUDA**: When you call `configure_gpu(enable=False)`, it sets `CUDA_VISIBLE_DEVICES="-1"`, which makes `torch.cuda.is_available()` return `False`. The GPU is truly "hidden" from PyTorch/TensorFlow.
 
-- **Apple Silicon MPS**: When you call `configure_gpu(enable=False)`, it sets an environment variable to indicate GPU should not be used, but `torch.backends.mps.is_available()` will still return `True` because the hardware is always available. **The GPU is not actually disabled at the PyTorch level** - your code must check `choosegpu.get_gpu_config()` to determine whether to use it.
+- **Apple Silicon MPS**: When you call `configure_gpu(enable=False)`, there is no effect because the hardware is always available. **The GPU is not actually disabled at the PyTorch level** - your code must check `choosegpu.get_gpu_config()` to determine whether to use it.
 
 ## Installation
 
@@ -54,7 +54,7 @@ import torch
 # The appropriate GPU backend will be configured
 ```
 
-### Disable GPU
+### Disable GPU (only effective on NVIDIA, not on Mac Silicon)
 
 ```python
 import choosegpu
@@ -64,9 +64,7 @@ choosegpu.configure_gpu(enable=False)
 
 import torch
 
-# On NVIDIA: torch.cuda.is_available() will be False
-# On Mac Silicon: torch.backends.mps.is_available() will still be True,
-#                 but GPU is configured not to be used
+# On Mac Silicon: check choosegpu.get_gpu_config() to see if GPU should not be used
 ```
 
 ### Check GPU Configuration

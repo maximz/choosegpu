@@ -181,10 +181,8 @@ def configure_gpu(
     IMPORTANT BEHAVIORAL DIFFERENCE:
     - On NVIDIA: configure_gpu(enable=False) sets CUDA_VISIBLE_DEVICES="-1", which makes
                  torch.cuda.is_available() return False. GPU is truly disabled.
-    - On Mac Silicon: configure_gpu(enable=False) sets an environment variable flag, but
-                      torch.backends.mps.is_available() will STILL return True because the
-                      hardware is always detectable. Your code must check get_gpu_config()
-                      to determine whether to actually use the GPU.
+    - On Mac Silicon: configure_gpu(enable=False) will not prevent the hardware from being detectable.
+                      Your code must check get_gpu_config() to determine whether to actually use the GPU.
 
     Arguments:
     - enable: enable or disable GPU
